@@ -26,11 +26,12 @@ TEMPO_MAXIMO_ENSEMBLE = 8 * 3600
 SUFIXOS_FIGURAS = ("fase1", "metodos", "ensemble")
 
 
-def executar_uf(uf: str, saida: Path, um_mapa: bool) -> dict:
+def executar_uf(uf: str, ano: int, saida: Path, um_mapa: bool) -> dict:
     """Roda uma UF em processo próprio, para que a falha de um estado não pare os demais."""
     pasta = saida / uf
     pasta.mkdir(parents=True, exist_ok=True)
     comando = [sys.executable, str(carga.RAIZ / "src" / "pipeline.py"), "--uf", uf]
+    comando += ["--ano", str(ano)]
     comando += ["--saida", str(saida)]
     if um_mapa:
         comando.append("--um-mapa")
@@ -48,9 +49,10 @@ def executar_uf(uf: str, saida: Path, um_mapa: bool) -> dict:
     return resumir_log(uf, status, str(log), time.perf_counter() - comeco, pasta)
 
 
-def executar_ensemble(uf: str, saida: Path) -> tuple[str, float, str]:
+def executar_ensemble(uf: str, ano: int, saida: Path) -> tuple[str, float, str]:
     """Gera o conjunto de mapas da UF em processo próprio; requer o mapa de base já pronto."""
     comando = [sys.executable, str(carga.RAIZ / "src" / "ensemble.py"), "--uf", uf]
+    comando += ["--ano", str(ano)]
     comando += ["--saida", str(saida)]
     comeco = time.perf_counter()
     try:
@@ -89,7 +91,7 @@ def resumir_log(uf: str, status: str, log: str, segundos: float, pasta: Path) ->
         "coordenadas": extrair(r"Coordenadas imputadas: (.+)"),
         "sem_data_nascimento": extrair(r"sem data de nascimento: (.+)"),
     }
-    validacao = pasta / "validacao_2022.csv"
+    validacao = pasta / "validacao_oficial.csv"
     if validacao.exists():
         tabela = pd.read_csv(validacao)
         relatorio["n_cadeiras"] = int(tabela["oficial"].sum())
@@ -124,8 +126,8 @@ def agregar_estados(pastas: dict[str, Path]) -> pd.DataFrame:
 
 
 def somar_brasil(por_estado: pd.DataFrame, ordem: list[str]) -> pd.DataFrame:
-    """Resultado nacional, com as agremiações na ordem de votos de 2022."""
-    colunas = ["cadeiras_E", "distritos_D", "lista", "excedente", "total", "variacao_vs_2022"]
+    """Resultado nacional, com as agremiações na ordem de votos da eleição."""
+    colunas = ["cadeiras_E", "distritos_D", "lista", "excedente", "total", "variacao_vs_real"]
     soma = por_estado.groupby(["cenario", "ag"], as_index=False, sort=False)[colunas].sum()
     soma["_ordem"] = soma["ag"].map({ag: i for i, ag in enumerate(ordem)})
     cenarios = {c: i for i, c in enumerate(por_estado["cenario"].unique())}
@@ -176,7 +178,7 @@ def montar_ensemble_brasil(params: dict, pastas: dict[str, Path], saida: Path) -
     amostras, votos, cadeiras = {}, {}, {}
     for uf, pasta in pastas.items():
         amostras[uf] = pd.read_parquet(pasta / "ensemble_amostras.parquet")
-        parametros_uf = carga.ler_params(uf)
+        parametros_uf = carga.ler_params(uf, params["ano"])
         cadeiras[uf] = parametros_uf["n_cadeiras"]
         votos[uf] = pd.read_parquet(
             carga.pasta_processados(parametros_uf) / "votos_ag.parquet"
@@ -193,6 +195,7 @@ def montar_ensemble_brasil(params: dict, pastas: dict[str, Path], saida: Path) -
         on=["cenario", "ag"],
         how="left",
     )
+    resumo = ensemble.anexar_resultado_real(resumo, base)
     resumo = resumo.sort_values(["cenario", "ag"], key=lambda c: c.map(ordem) if c.name == "ag" else c)
     pais = pais.merge(
         base.groupby("cenario")["total"].sum().rename("total_mapa_base"), on="cenario", how="left"
@@ -207,8 +210,10 @@ def montar_ensemble_brasil(params: dict, pastas: dict[str, Path], saida: Path) -
         carga.ler_cores(),
         "Brasil",
         figuras.NOTA_ENSEMBLE.format(
+            ano=figuras.ANO,
             n_amostras=n_amostras,
-            extra="A soma nacional sorteia, de forma independente, um mapa de cada estado.",
+            extra="A soma nacional sorteia, de forma independente, um mapa de cada estado. "
+            + figuras.nota_diferencas(),
         ),
         saida / f"brasil_{params['ano']}_ensemble",
     )
@@ -217,7 +222,8 @@ def montar_ensemble_brasil(params: dict, pastas: dict[str, Path], saida: Path) -
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     argumentos = argparse.ArgumentParser(description=__doc__)
-    argumentos.add_argument("--saida", required=True, type=Path)
+    argumentos.add_argument("--ano", type=int, help="Eleição; o padrão está em params.yaml.")
+    argumentos.add_argument("--saida", type=Path, help="Pasta em vez da definida em params.yaml.")
     argumentos.add_argument("--ufs", nargs="+", default=sorted(carga.UFS))
     argumentos.add_argument("--um-mapa", action="store_true")
     argumentos.add_argument("--ensemble", action="store_true", help="Roda também a Fase 3.")
@@ -229,14 +235,16 @@ if __name__ == "__main__":
         help="UFs já prontas, somadas ao resultado nacional sem rodar de novo.",
     )
     opcoes = argumentos.parse_args()
-    parametros = carga.ler_params()
+    parametros = carga.ler_params(ano=opcoes.ano)
+    figuras.ANO = parametros["ano"]
+    opcoes.saida = opcoes.saida or carga.RAIZ / parametros["caminhos"]["outputs"]
     opcoes.saida.mkdir(parents=True, exist_ok=True)
 
     relatorios = []
     for uf in opcoes.ufs:
-        relatorio = executar_uf(uf, opcoes.saida, opcoes.um_mapa)
+        relatorio = executar_uf(uf, parametros["ano"], opcoes.saida, opcoes.um_mapa)
         if opcoes.ensemble and relatorio["status"] == "ok":
-            status, segundos, erro = executar_ensemble(uf, opcoes.saida)
+            status, segundos, erro = executar_ensemble(uf, parametros["ano"], opcoes.saida)
             relatorio.update(ensemble=status, ensemble_segundos=round(segundos), ensemble_erro=erro)
         relatorios.append(relatorio)
         logger.info("%s: %s em %ss %s", uf, relatorio["status"], relatorio["segundos"], relatorio["erro"])

@@ -32,9 +32,50 @@ FOLGA_CENARIO = 0.42
 MARGEM_INFERIOR = 2.16
 MARGEM_SUPERIOR = 0.72
 
+# Ano da eleição mostrada; definido por quem inicia a execução.
+ANO = 2022
+# Em 2018 ainda havia coligações, proibidas pela regra simulada.
+AGREMIACAO_POR_ANO = {2018: "Coligações de 2018 desfeitas: cada partido conta sozinho."}
+AGREMIACAO_PADRAO = "Federações contam como um único partido."
+
+
+LINK_DIFERENCAS = "github.com/Utreti/distrital_misto/blob/main/docs/diferencas_resultado_real.md"
+ARQUIVO_DIFERENCAS = Path(__file__).resolve().parents[1] / "config" / "diferencas_resultado_real.csv"
+
+
+def resumir_diferencas(tabela: pd.DataFrame, ano: int, uf: str | None = None) -> str:
+    """Quantas cadeiras do resultado real diferem da Câmara e quantas já vieram de decisões."""
+    casos = tabela[(tabela["ano"] == ano) & (uf is None or tabela["uf"] == uf)]
+    if casos.empty:
+        return ""
+    fora = casos[casos["na_totalizacao"] == "nao"]
+    dentro = int(casos.loc[casos["na_totalizacao"] == "sim", "n_cadeiras"].sum())
+    n_fora = int(fora["n_cadeiras"].sum())
+    locais = ", ".join(fora["uf"])
+    # A lista vem de fontes públicas e pode estar incompleta: zero aqui é "nenhuma conhecida".
+    camara = (
+        f"difere da Câmara em {n_fora} cadeira{'s' if n_fora != 1 else ''} ({locais})"
+        if n_fora
+        else "não tem outra diferença conhecida em relação à Câmara"
+    )
+    return (
+        f"O resultado real de {ano} é a totalização atual do TSE: já inclui {dentro} "
+        f"{'cadeira trocada' if dentro == 1 else 'cadeiras trocadas'} de partido por decisões "
+        f"posteriores à eleição e {camara}. Motivos: {LINK_DIFERENCAS}"
+    )
+
+
+def nota_diferencas(uf: str | None = None) -> str:
+    return resumir_diferencas(pd.read_csv(ARQUIVO_DIFERENCAS), ANO, uf)
+
+
+def _campos_notas() -> dict:
+    return {"ano": ANO, "agremiacao": AGREMIACAO_POR_ANO.get(ANO, AGREMIACAO_PADRAO)}
+
+
 NOTAS = (
-    "Notas: contrafactual mecânico com os votos de 2022; não modela mudanças de comportamento de "
-    "eleitores, candidatos ou partidos. Federações contam como um único partido. Vencedor do "
+    "Notas: contrafactual mecânico com os votos de {ano}; não modela mudanças de comportamento de "
+    "eleitores, candidatos ou partidos. {agremiacao} Vencedor do "
     "distrito: mais votos, no máximo um distrito por candidato, e o candidato mais velho vence "
     "empates. Empates na alocação proporcional vão para a agremiação com mais votos no total "
     "(hipótese de modelagem). Excedentes sem limite. Barreira = 80% do quociente eleitoral. "
@@ -44,10 +85,10 @@ NOTAS = (
 
 
 def _formatar_variacoes(tabela: pd.DataFrame) -> str:
-    """Saldo por agremiação contra 2022, como "MDB +1 · PP −1"."""
-    mudancas = tabela[tabela["variacao_vs_2022"] != 0]
+    """Saldo por agremiação contra o resultado real, como "MDB +1 · PP −1"."""
+    mudancas = tabela[tabela["variacao_vs_real"] != 0]
     partes = [
-        f"{linha.ag} {'+' if linha.variacao_vs_2022 > 0 else '−'}{abs(linha.variacao_vs_2022)}"
+        f"{linha.ag} {'+' if linha.variacao_vs_real > 0 else '−'}{abs(linha.variacao_vs_real)}"
         for linha in mudancas.itertuples()
     ]
     return " · ".join(partes) if partes else "sem mudança"
@@ -65,6 +106,7 @@ def desenhar_figura_cenarios(
     nome_estado: str,
     nao_inteiros: str,
     caminho_base: Path,
+    uf: str | None = None,
 ) -> None:
     """Um bloco por cenário e uma bolinha por cadeira; grava PNG (300 dpi) e SVG.
 
@@ -108,7 +150,7 @@ def desenhar_figura_cenarios(
         n_linhas = contar_linhas(total)
         posicao = 0
         for linha in tabela[tabela["total"] > 0].itertuples():
-            ganhos = max(0, int(linha.variacao_vs_2022))
+            ganhos = max(0, int(linha.variacao_vs_real))
             for cadeira in range(int(linha.total)):
                 # Excedentes e cadeiras ganhas ficam no fim do grupo da agremiação.
                 excedente = cadeira >= linha.total - linha.excedente
@@ -174,7 +216,7 @@ def desenhar_figura_cenarios(
     figura.text(
         0.012,
         (altura_figura - 0.36) / altura_figura,
-        f"Cadeiras de deputado federal: {nome_estado}, sob cada regra, com os votos de 2022",
+        f"Cadeiras de deputado federal: {nome_estado}, sob cada regra, com os votos de {ANO}",
         color=COR_TEXTO,
         fontsize=14,
         fontweight="bold",
@@ -186,6 +228,7 @@ def desenhar_figura_cenarios(
         if n_cadeiras <= 10
         else "Resultado de um único mapa distrital; outros mapas podem mudar os vencedores."
     )
+    ressalva = f"{ressalva} {nota_diferencas(uf)}".strip()
     legenda = [
         Line2D([], [], marker="o", linestyle="", color=cores[ag], markersize=11, label=ag)
         for ag in presentes
@@ -200,7 +243,7 @@ def desenhar_figura_cenarios(
             markeredgecolor=COR_ANEL,
             markeredgewidth=2.2,
             markersize=13,
-            label="Cadeira ganha em relação a 2022",
+            label=f"Cadeira ganha em relação a {ANO}",
         ),
         Line2D(
             [],
@@ -226,7 +269,7 @@ def desenhar_figura_cenarios(
     figura.text(
         0.012,
         0.16 / altura_figura,
-        textwrap.fill(NOTAS.format(nao_inteiros=nao_inteiros, ressalva=ressalva), width=175),
+        textwrap.fill(NOTAS.format(nao_inteiros=nao_inteiros, ressalva=ressalva, **_campos_notas()), width=175),
         color=COR_TEXTO_SECUNDARIO,
         fontsize=9,
         va="bottom",
@@ -267,7 +310,7 @@ def desenhar_figura_nacional(
     eixo.text(
         0.2,
         0.42,
-        "Cadeiras de deputado federal: Brasil, sob cada regra, com os votos de 2022",
+        f"Cadeiras de deputado federal: Brasil, sob cada regra, com os votos de {ANO}",
         color=COR_TEXTO,
         fontsize=17,
         fontweight="bold",
@@ -297,7 +340,7 @@ def desenhar_figura_nacional(
         )
         posicao = 0
         for linha in tabela[tabela["total"] > 0].itertuples():
-            ganhos = max(0, int(linha.variacao_vs_2022))
+            ganhos = max(0, int(linha.variacao_vs_real))
             for cadeira in range(int(linha.total)):
                 excedente = cadeira >= linha.total - linha.excedente
                 ganho = cadeira >= linha.total - ganhos
@@ -331,7 +374,7 @@ def desenhar_figura_nacional(
     legenda += [
         Line2D(
             [], [], marker="o", linestyle="", markerfacecolor="none", markeredgecolor=COR_ANEL,
-            markeredgewidth=1.6, markersize=12, label="Cadeira ganha em relação a 2022",
+            markeredgewidth=1.6, markersize=12, label=f"Cadeira ganha em relação a {ANO}",
         ),
         Line2D(
             [], [], marker="s", linestyle="", color=COR_TEXTO_SECUNDARIO, markersize=10,
@@ -350,9 +393,10 @@ def desenhar_figura_nacional(
         columnspacing=1.4,
     )
     notas = NOTAS.format(
+        **_campos_notas(),
         nao_inteiros="os grandes demais para um único distrito",
         ressalva="Soma dos 27 estados, cada um com seu próprio mapa distrital; outros mapas "
-        "podem mudar os vencedores.",
+        f"podem mudar os vencedores. {nota_diferencas()}",
     )
     figura.text(
         0.2 / largura,
@@ -369,19 +413,20 @@ def desenhar_figura_nacional(
 
 
 NOTA_ENSEMBLE = (
-    "Notas: contrafactual mecânico com os votos de 2022. Cada amostra é um mapa válido gerado por "
+    "Notas: contrafactual mecânico com os votos de {ano}. Cada amostra é um mapa válido gerado por "
     "ReCom, com as mesmas regras do mapa de base (contiguidade, ±20% do eleitorado, municípios "
     "inteiros salvo os grandes demais), e {n_amostras} amostras por número de distritos. A barra "
     "vai do percentil 5 ao 95; a linha fina, do mínimo ao máximo. A variação mede o efeito do "
-    "desenho dos distritos, não a incerteza do voto. {extra}"
+    "desenho dos distritos, não a incerteza do voto. O traço preto marca as cadeiras do resultado "
+    "real de {ano}, sob a regra proporcional atual. {extra}"
 )
 
 NOTA_METODOS = (
-    "Notas: contrafactual mecânico com os votos de 2022, nos mesmos mapas de base em todas as "
+    "Notas: contrafactual mecânico com os votos de {ano}, nos mesmos mapas de base em todas as "
     "colunas: só muda o método que calcula o direito proporcional de cada agremiação. Regra atual: "
     "quocientes e sobras por maior média. D'Hondt: divisores 1, 2, 3... Sainte-Laguë: divisores "
     "1, 3, 5... Barreira = 80% do quociente eleitoral. Excedentes sem limite. "
-    "Cadeira ganha e saldo são medidos contra o resultado real de 2022."
+    "Cadeira ganha e saldo são medidos contra o resultado real de {ano}."
 )
 
 
@@ -403,7 +448,10 @@ def desenhar_figura_ensemble(
 ) -> None:
     """Faixa de cadeiras por agremiação em cada cenário PEC, com o mapa de base marcado."""
     cenarios_pec = [cenario for cenario in cenarios if cenario["tipo"] == "pec"]
-    presentes = list(resumo.loc[resumo["total_max"] > 0, "ag"].drop_duplicates())
+    # Partido que só teve cadeira no resultado real também aparece, para o traço não sumir.
+    presentes = list(
+        resumo.loc[(resumo["total_max"] > 0) | (resumo["total_real"] > 0), "ag"].drop_duplicates()
+    )
     sem_cor = [ag for ag in presentes if ag not in cores]
     if sem_cor:
         raise ValueError(f"Agremiações sem cor em cores_agremiacoes.csv: {sem_cor}")
@@ -412,7 +460,10 @@ def desenhar_figura_ensemble(
     linhas_grade = math.ceil(len(cenarios_pec) / colunas_grade)
     altura_painel = 0.8 + 0.27 * len(presentes)
     largura = 14.0
-    rodape = 1.5
+    # O rodapé cresce com a nota, para ela não invadir a legenda.
+    nota_quebrada = textwrap.fill(notas, width=165)
+    altura_legenda = 0.17 + 0.17 * (nota_quebrada.count("\n") + 1)
+    rodape = altura_legenda + 0.65
     altura = altura_painel * linhas_grade + rodape + 1.15
     figura, eixos = plt.subplots(
         linhas_grade,
@@ -430,7 +481,7 @@ def desenhar_figura_ensemble(
             "hspace": 0.3,
         },
     )
-    limite = float(resumo["total_max"].max()) + 0.5
+    limite = float(resumo[["total_max", "total_real"]].max().max()) + 0.5
     for eixo, cenario in zip(eixos.ravel(), cenarios_pec):
         tabela = resumo[resumo["cenario"] == cenario["id"]].set_index("ag").reindex(presentes)
         tamanho = estado[estado["cenario"] == cenario["id"]].iloc[0]
@@ -458,6 +509,14 @@ def desenhar_figura_ensemble(
                     linewidth=1.2,
                     zorder=4,
                 )
+            eixo.plot(
+                [linha["total_real"], linha["total_real"]],
+                [y - 0.4, y + 0.4],
+                color="#000000",
+                lw=1.8,
+                solid_capstyle="butt",
+                zorder=5,
+            )
         eixo.set_yticks(range(len(presentes)), presentes, fontsize=9.5, color=COR_TEXTO)
         eixo.set_ylim(len(presentes) - 0.5, -0.5)
         eixo.set_xlim(-0.5, limite)
@@ -482,7 +541,7 @@ def desenhar_figura_ensemble(
     figura.text(
         0.012,
         1 - 0.42 / altura,
-        f"Quanto o desenho dos distritos muda as cadeiras: {nome}, com os votos de 2022",
+        f"Quanto o desenho dos distritos muda as cadeiras: {nome}, com os votos de {ANO}",
         color=COR_TEXTO,
         fontsize=14,
         fontweight="bold",
@@ -495,12 +554,16 @@ def desenhar_figura_ensemble(
             [], [], marker="D", linestyle="", markerfacecolor="none", markeredgecolor=COR_ANEL,
             markersize=7, label="Mapa de base",
         ),
+        Line2D(
+            [], [], marker="|", linestyle="", color="#000000", markersize=12, markeredgewidth=1.8,
+            label=f"Resultado real de {ANO} (regra proporcional)",
+        ),
     ]
     figura.legend(
         handles=legenda,
         loc="lower left",
-        bbox_to_anchor=(0.012, 0.85 / altura),
-        ncol=4,
+        bbox_to_anchor=(0.012, altura_legenda / altura),
+        ncol=5,
         frameon=False,
         fontsize=10,
         labelcolor=COR_TEXTO,
@@ -508,7 +571,7 @@ def desenhar_figura_ensemble(
     figura.text(
         0.012,
         0.12 / altura,
-        textwrap.fill(notas, width=165),
+        nota_quebrada,
         color=COR_TEXTO_SECUNDARIO,
         fontsize=9,
         va="bottom",
@@ -520,7 +583,7 @@ def _desenhar_bloco(eixo, tabela, cores, x0, y0, passo, tamanho) -> None:
     """Bolinhas de um cenário, com no máximo MAX_BOLINHAS_POR_LINHA por linha."""
     posicao = 0
     for linha in tabela[tabela["total"] > 0].itertuples():
-        ganhos = max(0, int(linha.variacao_vs_2022))
+        ganhos = max(0, int(linha.variacao_vs_real))
         for cadeira in range(int(linha.total)):
             excedente = cadeira >= linha.total - linha.excedente
             ganho = cadeira >= linha.total - ganhos
@@ -579,14 +642,14 @@ def desenhar_figura_metodos(
     eixo.text(
         0.15,
         0.38,
-        f"Cadeiras de deputado federal por método de alocação: {nome}, com os votos de 2022",
+        f"Cadeiras de deputado federal por método de alocação: {nome}, com os votos de {ANO}",
         color=COR_TEXTO,
         fontsize=14,
         fontweight="bold",
     )
 
     y_real = topo - 0.3
-    eixo.text(0.15, y_real, "Resultado real\nde 2022", color=COR_TEXTO, fontsize=10.5, va="top")
+    eixo.text(0.15, y_real, f"Resultado real\nde {ANO}", color=COR_TEXTO, fontsize=10.5, va="top")
     _desenhar_bloco(eixo, real, cores, margem_esquerda + 0.08, y_real + 0.1, passo, 62)
     composicao = " · ".join(f"{l.ag} {l.total}" for l in real[real["total"] > 0].itertuples())
     eixo.text(
@@ -635,7 +698,7 @@ def desenhar_figura_metodos(
     legenda += [
         Line2D(
             [], [], marker="o", linestyle="", markerfacecolor="none", markeredgecolor=COR_ANEL,
-            markeredgewidth=1.6, markersize=11, label="Cadeira ganha em relação a 2022",
+            markeredgewidth=1.6, markersize=11, label=f"Cadeira ganha em relação a {ANO}",
         ),
         Line2D(
             [], [], marker="s", linestyle="", color=COR_TEXTO_SECUNDARIO, markersize=9,
@@ -656,7 +719,7 @@ def desenhar_figura_metodos(
     figura.text(
         0.15 / largura,
         0.12 / altura,
-        textwrap.fill(NOTA_METODOS, width=int(largura * 12)),
+        textwrap.fill(NOTA_METODOS.format(ano=ANO) + (f" {nota_diferencas()}" if nome == "Brasil" else ""), width=int(largura * 12)),
         color=COR_TEXTO_SECUNDARIO,
         fontsize=8.5,
         va="bottom",

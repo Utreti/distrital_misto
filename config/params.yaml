@@ -1,5 +1,5 @@
 # Parâmetros da simulação. Caminhos relativos à raiz do projeto.
-# `uf` é o padrão; `python src/pipeline.py --uf SP` escolhe outra UF.
+# `uf` e `ano` são o padrão; `python src/pipeline.py --uf SP --ano 2018` escolhe outros.
 # O número de cadeiras de cada UF vem dos eleitos no arquivo de candidatos.
 uf: AC
 ano: 2022
@@ -19,12 +19,19 @@ distritos:
   ensemble_amostras: 1400
   ensemble_burn_in: 10
   ensemble_passos_por_amostra: 1
+  # Estados que só convergem (Gelman-Rubin abaixo de 1,1) com cadeias mais longas.
+  ensemble_por_uf:
+    PR: &cadeias_longas {ensemble_burn_in: 20, ensemble_passos_por_amostra: 4}
+    SP: *cadeias_longas
+    MG: *cadeias_longas
+    BA: *cadeias_longas
+    RJ: *cadeias_longas
 
 # Linhas da figura, de cima para baixo (seção 1).
 cenarios:
-  - id: real_2022
+  - id: "real_{ano}"
     tipo: real
-    rotulo: Resultado real de 2022
+    rotulo: "Resultado real de {ano}"
   - id: pec_50_com_barreira
     tipo: pec
     proporcao_distrital: "1/2"
@@ -63,21 +70,33 @@ metodos_comparados:
     rotulo: Sainte-Laguë
 
 caminhos:
-  fontes: ../eleicoes/2022
-  intermediario: data/interim
-  processed: data/processed
-  outputs: outputs
+  fontes: "../eleicoes/{ano}"
+  intermediario: "data/{ano}/interim"
+  processed: "data/{ano}/processed"
+  outputs: "outputs/{ano}"
+  setores: data
 
 # Arquivos nacionais (_BRASIL: todos os cargos; _BR contém apenas Presidente, não usar).
 arquivos:
-  candidatos: consulta_cand_2022/consulta_cand_2022_BRASIL.csv
-  votacao_partido: votacao_partido_munzona_2022/votacao_partido_munzona_2022_BRASIL.csv
-  votacao_candidato: votacao_candidato_munzona_2022/votacao_candidato_munzona_2022_BRASIL.csv
-  detalhe_munzona: detalhe_votacao_munzona_2022/detalhe_votacao_munzona_2022_BRASIL.csv
-  detalhe_secao: detalhe_votacao_secao_2022/detalhe_votacao_secao_2022_BRASIL.csv
-  eleitorado_local: eleitorado_local_votacao_2022/eleitorado_local_votacao_2022.csv
-  votacao_secao: votacao_secao_2022_{uf}.zip
-  # Só para achar locais de 2022 sem coordenada; a chave e o nome do local são os de 2022.
+  candidatos: "consulta_cand_{ano}/consulta_cand_{ano}_BRASIL.csv"
+  votacao_partido: "votacao_partido_munzona_{ano}/votacao_partido_munzona_{ano}_BRASIL.csv"
+  votacao_candidato: "votacao_candidato_munzona_{ano}/votacao_candidato_munzona_{ano}_BRASIL.csv"
+  detalhe_munzona: "detalhe_votacao_munzona_{ano}/detalhe_votacao_munzona_{ano}_BRASIL.csv"
+  detalhe_secao: "detalhe_votacao_secao_{ano}/detalhe_votacao_secao_{ano}_BRASIL.csv"
+  eleitorado_local: "eleitorado_local_votacao_{ano}/eleitorado_local_votacao_{ano}.csv"
+  votacao_secao: "votacao_secao_{ano}_{uf}.zip"
+  # Só para achar locais sem coordenada; a chave e o nome do local são os da própria eleição.
   locais_complementares: ../2026/eleitorado_local_votacao_2026.zip
-  setores: BR_setores_CD2022.zip
-  agregados_basico: Agregados_por_setores_basico_BR_20260520/Agregados_por_setores_basico_BR.csv
+  # A malha do Censo 2022 serve a todas as eleições.
+  setores: ../2022/BR_setores_CD2022.zip
+  agregados_basico: ../2022/Agregados_por_setores_basico_BR_20260520/Agregados_por_setores_basico_BR.csv
+
+# Coligações proporcionais: só valem para validar o resultado real; a simulação usa partidos.
+anos_com_coligacoes: [2018]
+
+# O que muda em cada eleição.
+arquivos_por_ano:
+  2018:
+    votacao_candidato: ../votacao_candidato_munzona_2018/votacao_candidato_munzona_2018_BRASIL.csv
+    # MG e ES quase não têm coordenadas em 2018; a de 2022 coincide onde as duas existem.
+    locais_por_secao: ../2022/eleitorado_local_votacao_2022/eleitorado_local_votacao_2022.csv

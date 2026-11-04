@@ -23,7 +23,7 @@ DIVISORES = {
 
 @dataclass(frozen=True)
 class DetalheQuociente:
-    """Etapas intermediárias da regra atual, usadas na validação contra 2022."""
+    """Etapas intermediárias da regra atual, usadas na validação contra o oficial."""
 
     qe: int
     quociente_partidario: pd.Series
@@ -125,7 +125,7 @@ def alocar_proporcional(
 def alocar_lista_aberta(
     votos: pd.Series, votos_candidatos: pd.DataFrame, n_cadeiras: int
 ) -> pd.Series:
-    """Regra real de 2022, usada só para validar: inclui as exigências individuais.
+    """Regra real desde 2022, usada só para validar: inclui as exigências individuais.
 
     Vaga do quociente partidário exige candidato com 10% do QE; sobra exige agremiação com 80%
     do QE e candidato ainda não eleito com 20% do QE (CE art. 108 e 109). `votos_candidatos`
@@ -148,6 +148,40 @@ def alocar_lista_aberta(
         ag = _proxima_agremiacao(votos, cadeiras, grupo or list(votos.index))
         cadeiras[ag] += 1
     return cadeiras
+
+
+def alocar_com_coligacoes(
+    votos: pd.Series, votos_candidatos: pd.DataFrame, coligacoes: pd.Series, n_cadeiras: int
+) -> pd.Series:
+    """Regra real de 2018, usada só para validar; devolve as cadeiras de cada partido.
+
+    As vagas são da coligação (`coligacoes` liga partido a coligação) e vão aos seus candidatos
+    mais votados. Toda vaga exige candidato com 10% do QE; sobra por maior média, aberta a todas as
+    coligações (CE art. 108 e 109, Lei 13.488/2017). Sem disputantes, vale só a maior média.
+    `votos_candidatos` traz `agremiacao` e `votos`.
+    """
+    votos = _normalizar_votos(votos)
+    votos_coligacao = votos.groupby(coligacoes.reindex(votos.index)).sum()
+    candidatos = votos_candidatos[votos_candidatos["agremiacao"].isin(votos.index)].assign(
+        coligacao=lambda df: df["agremiacao"].map(coligacoes)
+    )
+    qe = calcular_qe(int(votos.sum()), n_cadeiras)
+    com_10 = candidatos[10 * candidatos["votos"] >= qe].groupby("coligacao").size()
+    com_10 = com_10.reindex(votos_coligacao.index, fill_value=0)
+
+    cadeiras = pd.concat([votos_coligacao // qe, com_10], axis=1).min(axis=1).astype(int)
+    for _ in range(n_cadeiras - int(cadeiras.sum())):
+        grupo = [c for c in votos_coligacao.index if int(com_10[c]) > int(cadeiras[c])]
+        coligacao = _proxima_agremiacao(
+            votos_coligacao, cadeiras, grupo or list(votos_coligacao.index)
+        )
+        cadeiras[coligacao] += 1
+
+    eleitos = candidatos.sort_values("votos", ascending=False, kind="stable").groupby("coligacao").head(
+        n_cadeiras
+    )
+    eleitos = eleitos[eleitos.groupby("coligacao").cumcount() < eleitos["coligacao"].map(cadeiras)]
+    return eleitos.groupby("agremiacao").size().reindex(votos.index, fill_value=0).astype(int)
 
 
 def calcular_n_distritos(n_cadeiras: int, proporcao: Fraction) -> int:

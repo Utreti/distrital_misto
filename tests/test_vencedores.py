@@ -112,7 +112,7 @@ def test_tabela_de_resultados_registra_excedente_e_variacao():
     )
     linha_c = resultados[(resultados["cenario"] == "pec") & (resultados["ag"] == "C")].iloc[0]
     assert (linha_c["cadeiras_E"], linha_c["excedente"], linha_c["total"]) == (0, 1, 1)
-    assert linha_c["variacao_vs_2022"] == 1
+    assert linha_c["variacao_vs_real"] == 1
     assert resultados["ag"].tolist()[:3] == ["A", "B", "C"]
 
     excedentes = pipeline.montar_excedentes(resultados, params["cenarios"], "AC")

@@ -491,6 +491,7 @@ def executar_uf(params: dict) -> None:
         on=["cenario", "ag"],
         how="left",
     )
+    resumo = anexar_resultado_real(resumo, base)
     tamanho_base = base.groupby("cenario")["total"].sum().rename("total_mapa_base")
     estado = estado.merge(tamanho_base, on="cenario", how="left")
     resumo.to_csv(saida / "ensemble_resumo.csv", index=False)
@@ -503,10 +504,22 @@ def executar_uf(params: dict) -> None:
         params["cenarios"],
         carga.ler_cores(),
         nome_estado,
-        figuras.NOTA_ENSEMBLE.format(n_amostras=len(matriz), extra=""),
+        figuras.NOTA_ENSEMBLE.format(ano=figuras.ANO, n_amostras=len(matriz), extra=""),
         saida / f"{distritos.normalizar_nome(nome_estado).lower().replace(' ', '_')}_"
         f"{params['ano']}_ensemble",
     )
+
+
+def anexar_resultado_real(resumo: pd.DataFrame, resultados: pd.DataFrame) -> pd.DataFrame:
+    """Acrescenta a `resumo` a coluna total_real, com as cadeiras do resultado real por agremiação."""
+    linhas_reais = resultados[resultados["cenario"].str.startswith("real_")]
+    if linhas_reais.empty:
+        raise ValueError("Resultados sem o cenário real.")
+    reais = linhas_reais.set_index("ag")["total"]
+    fora = sorted(set(reais[reais > 0].index) - set(resumo["ag"]))
+    if fora:
+        raise ValueError(f"Agremiações com cadeira real fora do resumo do conjunto: {fora}")
+    return resumo.assign(total_real=resumo["ag"].map(reais).fillna(0).astype(int))
 
 
 def somar_brasil(
@@ -578,10 +591,12 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     argumentos = argparse.ArgumentParser(description=__doc__)
     argumentos.add_argument("--uf", required=True)
+    argumentos.add_argument("--ano", type=int, help="Eleição; o padrão está em params.yaml.")
     argumentos.add_argument("--saida", type=Path, help="Pasta de saída em vez da de params.yaml.")
     argumentos.add_argument("--amostras", type=int, help="Substitui ensemble_amostras.")
     opcoes = argumentos.parse_args()
-    parametros = carga.ler_params(opcoes.uf)
+    parametros = carga.ler_params(opcoes.uf, opcoes.ano)
+    figuras.ANO = parametros["ano"]
     if opcoes.saida:
         parametros["caminhos"]["outputs"] = str(opcoes.saida)
     if opcoes.amostras:

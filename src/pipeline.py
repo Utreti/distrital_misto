@@ -37,12 +37,21 @@ def comparar_com_oficial(
     votos_candidato: pd.DataFrame,
     candidatos: pd.DataFrame,
     n_cadeiras: int,
+    coligacoes: pd.Series | None = None,
 ) -> pd.DataFrame:
-    """Compara com o oficial a regra real e o motor dos cenários PEC (listas fechadas)."""
+    """Compara com o oficial a regra real e o motor dos cenários PEC (listas fechadas).
+
+    Com `coligacoes` (partido e sua coligação), a regra real é a anterior ao fim das coligações.
+    """
     votos = votos_ag.set_index("agremiacao")["votos"]
+    regra_real = (
+        alocacao.alocar_lista_aberta(votos, votos_candidato, n_cadeiras)
+        if coligacoes is None
+        else alocacao.alocar_com_coligacoes(votos, votos_candidato, coligacoes, n_cadeiras)
+    )
     tabela = pd.DataFrame(
         {
-            "lista_aberta": alocacao.alocar_lista_aberta(votos, votos_candidato, n_cadeiras),
+            "lista_aberta": regra_real,
             "motor_pec": alocacao.alocar_proporcional(
                 votos, n_cadeiras, "quociente_atual", barreira=True
             ),
@@ -143,7 +152,7 @@ def montar_resultados(
     votos_candidato: pd.DataFrame,
 ) -> pd.DataFrame:
     """Tabela longa com todos os cenários; variação medida contra o resultado real."""
-    # Agremiações na ordem fixa da figura: votos de 2022, do maior para o menor.
+    # Agremiações na ordem fixa da figura: votos da eleição, do maior para o menor.
     votos = votos.sort_values(ascending=False, kind="stable")
     tabelas = []
     for cenario in params["cenarios"]:
@@ -159,8 +168,8 @@ def montar_resultados(
         )
     resultados = pd.concat(tabelas, ignore_index=True)
     real = resultados[resultados["cenario"] == params["cenarios"][0]["id"]].set_index("ag")["total"]
-    resultados["variacao_vs_2022"] = resultados["total"] - resultados["ag"].map(real)
-    return resultados[["cenario", "ag", *COLUNAS_RESULTADO, "variacao_vs_2022"]]
+    resultados["variacao_vs_real"] = resultados["total"] - resultados["ag"].map(real)
+    return resultados[["cenario", "ag", *COLUNAS_RESULTADO, "variacao_vs_real"]]
 
 
 def montar_excedentes(resultados: pd.DataFrame, cenarios: list[dict], uf: str) -> pd.DataFrame:
@@ -255,14 +264,21 @@ def etapa_carga_e_validacao(params: dict) -> None:
     for nome, df in dados.items():
         df.to_parquet(pasta / f"{nome}.parquet", index=False)
 
+    coligacoes = None
+    if params["ano"] in params["anos_com_coligacoes"]:
+        coligacoes = dados["votos_partido"].set_index("agremiacao")["SQ_COLIGACAO"]
     comparacao = comparar_com_oficial(
-        dados["votos_ag"], dados["votos_candidato"], dados["candidatos"], params["n_cadeiras"]
+        dados["votos_ag"],
+        dados["votos_candidato"],
+        dados["candidatos"],
+        params["n_cadeiras"],
+        coligacoes,
     )
-    comparacao.to_csv(saida / "validacao_2022.csv", index=False)
+    comparacao.to_csv(saida / "validacao_oficial.csv", index=False)
     if (comparacao["diferenca"] != 0).any():
         logger.warning("Motor difere do resultado oficial:\n%s", comparacao.to_string(index=False))
     else:
-        logger.info("Validação de 2022 aprovada: %d cadeiras", params["n_cadeiras"])
+        logger.info("Validação contra o oficial aprovada: %d cadeiras", params["n_cadeiras"])
 
     votos = comparar_votos_secao(dados)
     votos.to_csv(saida / "validacao_votos_secao.csv", index=False)
@@ -414,6 +430,7 @@ def etapa_resultados(params: dict) -> None:
         if len(nomes_nao_inteiros) > 1
         else "".join(nomes_nao_inteiros) or "nenhum",
         saida / f"{slug}_fase1",
+        params["uf"],
     )
 
 
@@ -421,6 +438,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     argumentos = argparse.ArgumentParser(description=__doc__)
     argumentos.add_argument("--uf", help="UF a simular; o padrão está em params.yaml.")
+    argumentos.add_argument("--ano", type=int, help="Eleição; o padrão está em params.yaml.")
     argumentos.add_argument(
         "--etapa",
         choices=["tudo", "distritos", "resultados"],
@@ -433,7 +451,8 @@ if __name__ == "__main__":
         "--um-mapa", action="store_true", help="Para na primeira semente que gerar mapa válido."
     )
     opcoes = argumentos.parse_args()
-    parametros = carga.ler_params(opcoes.uf)
+    parametros = carga.ler_params(opcoes.uf, opcoes.ano)
+    figuras.ANO = parametros["ano"]
     if opcoes.sementes:
         parametros["distritos"]["n_sementes"] = opcoes.sementes
     if opcoes.saida:

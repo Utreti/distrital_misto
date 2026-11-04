@@ -69,9 +69,34 @@ def extrair_votacao_secao(params: dict, uf: str) -> None:
     logger.info("votacao_secao %s: %d linhas", uf, len(tabela))
 
 
+def _ler_locais_por_secao(params: dict, colunas: list[str]) -> pd.DataFrame | None:
+    """Locais de outra eleição com a seção, para buscar também pela seção; opcional por ano."""
+    if "locais_por_secao" not in params["arquivos"]:
+        return None
+    tabela = pd.read_csv(
+        carga.caminho_fonte(params, "locais_por_secao"),
+        sep=";",
+        encoding="cp1252",
+        dtype=str,
+        usecols=[
+            "SG_UF", "NR_TURNO", "DS_TIPO_SECAO_AGREGADA", "NR_SECAO", "NR_LATITUDE", "NR_LONGITUDE",
+            *colunas,
+        ],
+    )
+    tabela = tabela[(tabela["NR_TURNO"] == "1") & (tabela["DS_TIPO_SECAO_AGREGADA"] == "Principal")]
+    tabela = tabela.drop(columns=["NR_TURNO", "DS_TIPO_SECAO_AGREGADA"])
+    for coluna in ["NR_LATITUDE", "NR_LONGITUDE"]:
+        tabela[coluna] = pd.to_numeric(tabela[coluna].str.replace(",", "."))
+    tabela = tabela[tabela["NR_LATITUDE"].ne(-1) & tabela["NR_LONGITUDE"].ne(-1)].dropna()
+    for coluna in [*colunas[:3], "NR_SECAO"]:
+        tabela[coluna] = tabela[coluna].astype("int64")
+    return tabela.sort_values([*colunas, "NR_SECAO"]).reset_index(drop=True)
+
+
 def extrair_locais_complementares(params: dict, ufs: list[str]) -> None:
-    """Locais de votação de outra eleição com coordenada, para completar os de 2022."""
+    """Locais de votação de outras eleições com coordenada, para completar os da eleição."""
     colunas = ["CD_MUNICIPIO", "NR_ZONA", "NR_LOCAL_VOTACAO", "NM_LOCAL_VOTACAO"]
+    por_secao = _ler_locais_por_secao(params, colunas)
     with zipfile.ZipFile(carga.caminho_fonte(params, "locais_complementares")) as arquivo_zip:
         for uf in ufs:
             membro = next(nome for nome in arquivo_zip.namelist() if nome.endswith(f"_{uf}.csv"))
@@ -89,6 +114,12 @@ def extrair_locais_complementares(params: dict, ufs: list[str]) -> None:
             for coluna in colunas[:3]:
                 tabela[coluna] = tabela[coluna].astype("int64")
             tabela = tabela.drop_duplicates().sort_values(colunas).reset_index(drop=True)
+            if por_secao is not None:
+                # Primeiro a eleição mais próxima: a busca fica com o primeiro local que achar.
+                tabela = pd.concat(
+                    [por_secao[por_secao["SG_UF"] == uf].drop(columns="SG_UF"), tabela],
+                    ignore_index=True,
+                )
             destino = carga.caminho_intermediario(params, "locais_complementares", uf)
             destino.parent.mkdir(parents=True, exist_ok=True)
             tabela.to_parquet(destino, index=False)
@@ -126,9 +157,10 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     argumentos = argparse.ArgumentParser(description=__doc__)
     argumentos.add_argument("--ufs", nargs="+", required=True, help="UFs de votos e setores.")
+    argumentos.add_argument("--ano", type=int, help="Eleição; o padrão está em params.yaml.")
     argumentos.add_argument("--sem-nacionais", action="store_true")
     opcoes = argumentos.parse_args()
-    parametros = carga.ler_params()
+    parametros = carga.ler_params(ano=opcoes.ano)
 
     with ProcessPoolExecutor(max_workers=6) as executor:
         tarefas = []
@@ -137,5 +169,8 @@ if __name__ == "__main__":
         tarefas += [executor.submit(extrair_votacao_secao, parametros, uf) for uf in opcoes.ufs]
         for tarefa in tarefas:
             tarefa.result()
-    extrair_setores(parametros, opcoes.ufs)
+    faltantes = [
+        uf for uf in opcoes.ufs if not carga.caminho_intermediario(parametros, "setores", uf).exists()
+    ]
+    extrair_setores(parametros, faltantes)
     extrair_locais_complementares(parametros, opcoes.ufs)

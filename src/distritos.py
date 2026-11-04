@@ -88,18 +88,22 @@ def _completar_com_outra_eleicao(
 ) -> int:
     """Preenche coordenadas com o mesmo local em outra eleição; devolve as seções preenchidas.
 
-    Procura pela chave do local e depois pelo nome dentro do município. O ponto só vale se cair
-    no município do TSE: a numeração de um local pode ter sido reaproveitada em outro lugar.
+    Procura pela chave do local, depois pelo nome dentro do município e, se os locais trouxerem
+    a seção, pela mesma seção. O ponto só vale se cair no município do TSE: a numeração de um
+    local pode ter sido reaproveitada em outro lugar.
     """
     colunas = ["NR_LONGITUDE", "NR_LATITUDE"]
     chave = ["CD_MUNICIPIO", "NR_ZONA", "NR_LOCAL_VOTACAO"]
     nome = ["CD_MUNICIPIO", "NM_LOCAL_VOTACAO"]
+    secao = ["CD_MUNICIPIO", "NR_ZONA", "NR_SECAO"]
+    buscas = (chave, nome, secao) if "NR_SECAO" in locais else (chave, nome)
     preenchidas = 0
-    for campos in (chave, nome):
+    for campos in buscas:
         ausentes = df.loc[df["NR_LATITUDE"].isna(), campos + ["CD_MUN"]].astype({"CD_MUNICIPIO": "int64"})
-        if campos is chave:
-            ausentes = ausentes.astype({"NR_ZONA": "int64", "NR_LOCAL_VOTACAO": "int64"})
-        unicos = locais.drop_duplicates(campos)[campos + colunas]
+        if campos is not nome:
+            ausentes = ausentes.astype({coluna: "int64" for coluna in campos})
+        unicos = locais.dropna(subset=campos).astype({coluna: "int64" for coluna in campos if coluna != "NM_LOCAL_VOTACAO"})
+        unicos = unicos.drop_duplicates(campos)[campos + colunas]
         achados = ausentes.reset_index().merge(unicos, on=campos).set_index("index")
         if achados.empty:
             continue

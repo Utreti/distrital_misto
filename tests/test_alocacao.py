@@ -58,6 +58,23 @@ def test_igual_ao_resultado_oficial(dados, votos_ag):
     assert _distribuidas(cadeiras) == carga.contar_eleitos_oficiais(dados["candidatos"]).to_dict()
 
 
+def test_coligacao_distribui_vagas_aos_seus_mais_votados():
+    votos = pd.Series({"A": 60, "B": 40, "C": 100})
+    coligacoes = pd.Series({"A": 1, "B": 1, "C": 2})
+    candidatos = pd.DataFrame(
+        {"agremiacao": ["A", "B", "B", "C", "C"], "votos": [10, 50, 30, 90, 10]}
+    )
+    cadeiras = alocacao.alocar_com_coligacoes(votos, candidatos, coligacoes, 4)
+    assert cadeiras.to_dict() == {"A": 0, "B": 2, "C": 2}
+
+
+def test_coligacao_sem_candidato_com_10_por_cento_perde_a_vaga():
+    votos = pd.Series({"A": 300, "B": 700})
+    coligacoes = pd.Series({"A": 1, "B": 2})
+    candidatos = pd.DataFrame({"agremiacao": ["A", "B", "B"], "votos": [10, 400, 300]})
+    assert alocacao.alocar_com_coligacoes(votos, candidatos, coligacoes, 2).to_dict() == {"A": 0, "B": 2}
+
+
 def test_validacao_do_pipeline_aprova_2022(dados):
     pipeline.validar_2022(dados["votos_ag"], dados["candidatos"], 8)
 

@@ -18,6 +18,8 @@ RAIZ = Path(__file__).resolve().parents[1]
 CHAVE_SECAO = ["CD_MUNICIPIO", "NR_ZONA", "NR_SECAO"]
 VOTOS_BRANCO_NULO = {"95", "96"}
 SITUACOES_ELEITO = {"ELEITO POR QP", "ELEITO POR MÉDIA"}
+# Em 2018 o arquivo de candidatos traz PATRIOTA e o de votos por partido, PATRI.
+SIGLAS_EQUIVALENTES = {"PATRI": "PATRIOTA"}
 
 
 UFS = {
@@ -51,14 +53,31 @@ UFS = {
 }
 
 
+def _aplicar_ano(params: dict) -> None:
+    """Preenche {ano} nos caminhos, nos arquivos e no cenário real, com as exceções do ano."""
+    ano = str(params["ano"])
+    params["arquivos"].update(params.pop("arquivos_por_ano", {}).get(params["ano"], {}))
+    for grupo in ("caminhos", "arquivos"):
+        params[grupo] = {chave: valor.replace("{ano}", ano) for chave, valor in params[grupo].items()}
+    for cenario in params["cenarios"]:
+        for campo in ("id", "rotulo"):
+            cenario[campo] = cenario[campo].replace("{ano}", ano)
+
+
 def ler_params(
-    uf: str | None = None, caminho: Path = RAIZ / "config" / "params.yaml"
+    uf: str | None = None,
+    ano: int | None = None,
+    caminho: Path = RAIZ / "config" / "params.yaml",
 ) -> dict:
-    """Parâmetros da UF; o número de cadeiras vem dos eleitos no arquivo de candidatos."""
+    """Parâmetros da UF e do ano; o número de cadeiras vem dos eleitos no arquivo de candidatos."""
     with open(caminho, encoding="utf-8") as arquivo:
         params = yaml.safe_load(arquivo)
     if uf is not None:
         params["uf"] = uf
+    if ano is not None:
+        params["ano"] = ano
+    _aplicar_ano(params)
+    params["distritos"].update(params["distritos"].pop("ensemble_por_uf", {}).get(params["uf"], {}))
     candidatos = caminho_intermediario(params, "candidatos", params["uf"])
     if candidatos.exists():
         situacao = pd.read_parquet(candidatos, columns=["DS_SIT_TOT_TURNO"])
@@ -73,7 +92,9 @@ def caminho_fonte(params: dict, nome: str, uf: str | None = None) -> Path:
 
 
 def caminho_intermediario(params: dict, nome: str, uf: str) -> Path:
-    return RAIZ / params["caminhos"]["intermediario"] / nome / f"{uf}.parquet"
+    # Os setores do Censo 2022 valem para todas as eleições.
+    base = params["caminhos"]["setores"] if nome == "setores" else params["caminhos"]["intermediario"]
+    return RAIZ / base / nome / f"{uf}.parquet"
 
 
 def pasta_processados(params: dict) -> Path:
@@ -125,8 +146,9 @@ def filtrar_cargo(df: pd.DataFrame, cargo: str) -> pd.DataFrame:
 
 
 def definir_agremiacao(df: pd.DataFrame) -> pd.Series:
-    """Federação conta como um único partido (regra 2.1)."""
-    return df["SG_FEDERACAO"].where(df["NR_FEDERACAO"] != "-1", df["SG_PARTIDO"])
+    """Federação conta como um único partido (regra 2.1); uma sigla por partido entre os arquivos."""
+    partido = df["SG_PARTIDO"].replace(SIGLAS_EQUIVALENTES)
+    return df["SG_FEDERACAO"].where(df["NR_FEDERACAO"] != "-1", partido)
 
 
 def _inteiros(df: pd.DataFrame, colunas: list[str]) -> pd.DataFrame:
@@ -153,9 +175,33 @@ def limpar_candidatos(candidatos: pd.DataFrame, cargo: str) -> pd.DataFrame:
     return df[colunas].sort_values("SQ_CANDIDATO").reset_index(drop=True)
 
 
+def _remover_registro_repetido(df: pd.DataFrame) -> pd.DataFrame:
+    """Tira o registro sem nominais que só repete a legenda de outro registro do mesmo partido.
+
+    O PDT do Amazonas em 2018 aparece na coligação e, de novo, como partido isolado, com os mesmos
+    7.048 votos de legenda; o total oficial de votos válidos conta esses votos uma única vez.
+    """
+    registros = df.groupby(["SG_PARTIDO", "SQ_COLIGACAO"], as_index=False)[
+        ["QT_VOTOS_NOMINAIS_VALIDOS", "QT_TOTAL_VOTOS_LEG_VALIDOS"]
+    ].sum()
+    com_nominais = registros[registros["QT_VOTOS_NOMINAIS_VALIDOS"] > 0]
+    repetidos = registros[registros["QT_VOTOS_NOMINAIS_VALIDOS"] == 0].merge(
+        com_nominais, on=["SG_PARTIDO", "QT_TOTAL_VOTOS_LEG_VALIDOS"], suffixes=("", "_outro")
+    )
+    repetidos = repetidos[repetidos["QT_TOTAL_VOTOS_LEG_VALIDOS"] > 0]
+    if repetidos.empty:
+        return df
+    logger.warning("Registro repetido removido: %s", repetidos["SG_PARTIDO"].tolist())
+    chaves = pd.MultiIndex.from_frame(repetidos[["SG_PARTIDO", "SQ_COLIGACAO"]])
+    return df[~pd.MultiIndex.from_frame(df[["SG_PARTIDO", "SQ_COLIGACAO"]]).isin(chaves)]
+
+
 def calcular_votos_partido(votacao_partido: pd.DataFrame, cargo: str) -> pd.DataFrame:
     """Votos nominais e de legenda válidos por partido, com sua agremiação."""
     df = filtrar_cargo(votacao_partido, cargo)
+    # O nome da coluna de convertidos muda entre as gerações do arquivo do TSE.
+    if "QT_VOTOS_NOM_CONVR_LEG_VALIDOS" not in df:
+        df = df.rename(columns={"QT_VOTOS_NOMINAIS_CONVR_LEG": "QT_VOTOS_NOM_CONVR_LEG_VALIDOS"})
     df = _inteiros(
         df,
         [
@@ -164,6 +210,7 @@ def calcular_votos_partido(votacao_partido: pd.DataFrame, cargo: str) -> pd.Data
             "QT_VOTOS_NOM_CONVR_LEG_VALIDOS",
         ],
     )
+    df = _remover_registro_repetido(df)
     df = df.assign(agremiacao=definir_agremiacao(df))
     return (
         df.groupby(["NR_PARTIDO", "SG_PARTIDO", "agremiacao"], as_index=False)
@@ -171,6 +218,7 @@ def calcular_votos_partido(votacao_partido: pd.DataFrame, cargo: str) -> pd.Data
             votos_nominais=("QT_VOTOS_NOMINAIS_VALIDOS", "sum"),
             votos_legenda=("QT_TOTAL_VOTOS_LEG_VALIDOS", "sum"),
             votos_convertidos=("QT_VOTOS_NOM_CONVR_LEG_VALIDOS", "sum"),
+            SQ_COLIGACAO=("SQ_COLIGACAO", "first"),
         )
         .sort_values("NR_PARTIDO")
         .reset_index(drop=True)
@@ -197,14 +245,17 @@ def calcular_totais_validos(detalhe_munzona: pd.DataFrame, cargo: str) -> dict[s
 def calcular_votos_candidato(
     votacao_candidato: pd.DataFrame, candidatos: pd.DataFrame, cargo: str
 ) -> pd.DataFrame:
-    """Votos válidos oficiais de cada candidato APTO."""
+    """Votos válidos oficiais de cada candidato, inclusive de quem perdeu o registro depois.
+
+    Dallagnol (PR, 2022) ficou INAPTO em 2023, mas seus votos seguem válidos nos totais oficiais.
+    """
     df = _inteiros(filtrar_cargo(votacao_candidato, cargo), ["QT_VOTOS_NOMINAIS_VALIDOS"])
     votos = df.groupby("SQ_CANDIDATO", as_index=False).agg(
         votos=("QT_VOTOS_NOMINAIS_VALIDOS", "sum")
     )
-    aptos = candidatos[candidatos["DS_SITUACAO_CANDIDATURA"] == "APTO"]
-    resultado = aptos.merge(votos, on="SQ_CANDIDATO", how="left", validate="one_to_one")
+    resultado = candidatos.merge(votos, on="SQ_CANDIDATO", how="left", validate="one_to_one")
     resultado["votos"] = resultado["votos"].fillna(0).astype(int)
+    resultado = resultado[(resultado["DS_SITUACAO_CANDIDATURA"] == "APTO") | (resultado["votos"] > 0)]
     return resultado.sort_values("SQ_CANDIDATO").reset_index(drop=True)
 
 
@@ -219,6 +270,7 @@ def limpar_votos_secao(
 
     Candidato APTO pode ter zero voto válido oficial (partido com DRAP indeferido, como PMB e
     PRTB em SP em 2022): só contam os candidatos com votos válidos nos totais oficiais.
+    Os demais votos nominais removidos são os de candidatos sem voto válido.
     """
     df = _inteiros(filtrar_cargo(votacao_secao, cargo), CHAVE_SECAO + ["QT_VOTOS"])
     df = df[~df["NR_VOTAVEL"].isin(VOTOS_BRANCO_NULO)]
@@ -228,7 +280,7 @@ def limpar_votos_secao(
     aptos = votos_candidato.loc[votos_candidato["votos"] > 0, ["SQ_CANDIDATO", "agremiacao"]]
     nominais = df[~eh_legenda].merge(aptos, on="SQ_CANDIDATO", how="inner", validate="many_to_one")
     logger.info(
-        "Votos nominais removidos (INAPTO): %d",
+        "Votos nominais removidos (sem voto válido oficial): %d",
         df.loc[~eh_legenda, "QT_VOTOS"].sum() - nominais["QT_VOTOS"].sum(),
     )
 
@@ -299,7 +351,7 @@ def montar_secoes(
 
 
 def contar_eleitos_oficiais(candidatos: pd.DataFrame) -> pd.Series:
-    """Cadeiras oficiais de 2022 por agremiação (referência da validação)."""
+    """Cadeiras oficiais por agremiação (referência da validação)."""
     eleitos = candidatos[candidatos["DS_SIT_TOT_TURNO"].isin(SITUACOES_ELEITO)]
     return eleitos.groupby("agremiacao")["SQ_CANDIDATO"].count().sort_index().rename("cadeiras")
 
